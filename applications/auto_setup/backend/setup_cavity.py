@@ -36,7 +36,7 @@ class SetupCavity(Cavity, SetupLinacObject):
         self.note_pv: str = self.auto_pv_addr("NOTE")
         self._note_pv_obj: Optional[PV] = None
 
-        self.tone_count_pv = self.pv_addr(f"{self.rfs_addr}:DAC_AMPLITUDE")
+        self.tone_count_pv = self.cryomodule.pv_addr(f"{self.rfs_addr}:DAC_AMPLITUDE")
         self._tone_count_pv_obj: Optional[PV] = None
 
     def capture_acon(self):
@@ -45,7 +45,7 @@ class SetupCavity(Cavity, SetupLinacObject):
     @property
     def tone_count_pv_obj(self):
         if not self._tone_count_pv_obj:
-            self._tone_count_pv_obj = PV(self.one_count_pv)
+            self._tone_count_pv_obj = PV(self.tone_count_pv)
         return self._tone_count_pv_obj
 
     @property
