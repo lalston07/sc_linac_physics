@@ -7,15 +7,13 @@ timestamp = '2022-06-30_16:49:05.440831'                # waveform timestamp
 time_timestap = '2022-06-30_15:46:04.712966'            # time data has its own timestamp
 
 # PV or fault string to search for and precise timestamp of the waveform
-cavity_faultname = 'ACCL:L3B:3180:CAV:FLTAWF'    # cavity details 
-forward_pow = 'ACCL:L3B:3180:FWD:FLTAWF'         # forward power details
-reverse_pow = 'ACCL:L3B:3180:REV:FLTAWF'         # reverse power details
-decay_ref = 'ACCL:L3B:3180:DECAYREFWF'           # decay reference details
-time_range = 'ACCL:L3B:3180:CAV:FLTTWF'          # time data in seconds
-
+cavity_faultname = 'ACCL:L3B:3180:CAV:FLTAWF'    # cavity details for amplitude
+forward_pow = 'ACCL:L3B:3180:FWD:FLTAWF'         # forward power details for amplitude
+reverse_pow = 'ACCL:L3B:3180:REV:FLTAWF'         # reverse power details for amplitude
+decay_ref = 'ACCL:L3B:3180:DECAYREFWF'           # decay reference details for amplitude
+time_range = 'ACCL:L3B:3180:CAV:FLTTWF'          # time data in seconds for amplitude
 
 def extracting_data(faultname, timestamp):
-    # converting list of lines to a file-like object
     section_lines = []
     with open(filename, 'r') as file:
         for line in file:
@@ -25,7 +23,7 @@ def extracting_data(faultname, timestamp):
     if not section_lines:
         print("No matching lines found.")
     else:
-        # convert to file-like object
+        # convert list of lines to file-like object
         # joins section_lines into a single string 
         # wraps it with io.StringIO so it behaves like a file to be used with np.loadtxt
         section_data = io.StringIO("".join(section_lines))
@@ -58,16 +56,16 @@ time_data = extracting_data(time_range, time_timestap)
 
 # plot setup
 plt.figure(figsize=(14,6))
-plt.plot(time_data, cavity_data, label = "Cavity", color = 'blue')
-plt.plot(time_data, forward_data, label = "Forward Power", color = 'green')
-plt.plot(time_data, reverse_data, label = "Reverse Power", color = 'red')
-plt.scatter(time_data, decay_data, label = "Normal Cavity Decay Reference", color = 'cyan', s=1, marker='o')
+plt.plot(time_data, cavity_data, label = "Cavity", color = 'blue', linewidth=3)
+plt.plot(time_data, forward_data, label = "Forward Power", color = 'green', linewidth=3)
+plt.plot(time_data, reverse_data, label = "Reverse Power", color = 'red', linewidth=3)
+plt.scatter(time_data, decay_data, label = "Normal Cavity Decay Reference", color = 'cyan', s=1, marker='o', linewidth=5)
 
 # plot formatting
-plt.xlabel('Time in Seconds')
-plt.ylabel('MV')
+plt.xlabel('Time in Seconds', fontsize='large') # or fontsize=14 for large font
+plt.ylabel('MV', fontsize='large')
 plt.title(f'Quench Waveforms - {cavity_faultname} {timestamp}')
-plt.legend()
+plt.legend(fontsize='large') 
 plt.grid(True)
 plt.tight_layout()
 
@@ -97,4 +95,6 @@ plt.show()
 # count (optional) - reads this number of dtype elements from the data
 # sep (optional) - string separating numbers in the data
 # like (optional) - reference object to allow creation of arrays which aren't numpy arrays
+
+
 
