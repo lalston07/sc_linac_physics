@@ -2,7 +2,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import re # importing regular expression module
 
-# changes with each file
 filename = 'ACCL_L3B_3180_20220630_164905_QUENCH.txt'   # imput data file
 timestamp = '2022-06-30_16:49:05.440831'                # waveform timestamp 
 
