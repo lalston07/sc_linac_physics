@@ -12,7 +12,7 @@ results = glob.glob(directory_path + '/**/*QUENCH.txt', recursive=True) # force 
 # print(results) 
 quench_files = [f for f in results if re.search(r"\d+_QUENCH", f)]
 print(f"Found {len(quench_files)} matching '##_QUENCH' text files:")
-print(quench_files)
+# print(quench_files)
 timestamps = []
 for file in quench_files:
     # line below splits the file in to 4 parts (after the '\') and gets the last part (filename)
@@ -28,22 +28,24 @@ for file in quench_files:
 timestamp_index = pd.Series(timestamps)         # pandas series object
 
 # step three - count the number of quenches per timestamp for the y-axis
-# frequency = timestamp_index.value_counts()
-frequency = timestamp_index.count()
+# .dt - accesses the datetime properties
+# .to_period("M") - converts timestamp to year and month and groups timestamps from same month together
+# .value_counts() - counts number of times each value appears 
+# .sort_index() - sorts results in chronological order
+frequency = timestamp_index.dt.to_period("M").value_counts().sort_index()        
 print(frequency)
 
-# # step four - create a Data Frame using two lists (timestamps and count of quenches)
-# df_frequency_time = pd.DataFrame({'time' : timestamps, 'frequency' : frequency})
-# print(df_frequency_time)
+# step four - create full date range including skipped months
 
-# # step five - plot the quench frequency data
-# plt.figure(figsize=(12,6))
-# plt.plot(df_frequency_time['time'], df_frequency_time['frequency'], marker='--')
-# # alternative plot method: "df_frequency_time.plot('time', 'frequency')"
-# plt.xlabel("")
-# plt.ylabel("")
-# plt.title("Quench Frequency Over Time")
-# plt.grid(True)
-# plt.tight_layout()
-# plt.show()
+# step five - plot the quench frequency data
+# x-axis is months and y-axis is number of quench files per month
+plt.figure(figsize=(12,6))
+frequency.plot(kind='bar', color='blue') # automatically uses periods as x-axis
+plt.xlabel("Month") # MAKE FONT BIGGER
+plt.ylabel("Number of Quenches")
+plt.title("Quench Frequency Over Time")
+plt.grid(True)  # MAKE GRID GO TO BACK
+plt.tight_layout()
+plt.show()
 
+# ADD LEDGEND FOR CRYO MODULE AND CAVITY
