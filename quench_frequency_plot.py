@@ -32,15 +32,15 @@ timestamp_index = pd.Series(timestamps)         # pandas series object
 # .to_period("M") - converts timestamp to year and month and groups timestamps from same month together
 # .value_counts() - counts number of times each value appears 
 # .sort_index() - sorts results in chronological order
-frequency = timestamp_index.dt.to_period("M").value_counts().sort_index()        
-print(frequency)
+quench_frequency = timestamp_index.dt.to_period("M").value_counts().sort_index()        
+print(quench_frequency)
 
 # step four - create full date range including skipped months
 
 # step five - plot the quench frequency data
 # x-axis is months and y-axis is number of quench files per month
 plt.figure(figsize=(12,6))
-frequency.plot(kind='bar', color='blue') # automatically uses periods as x-axis
+quench_frequency.plot(kind='bar', color='blue') # automatically uses periods as x-axis
 plt.xlabel("Month") # MAKE FONT BIGGER
 plt.ylabel("Number of Quenches")
 plt.title("Quench Frequency Over Time")
