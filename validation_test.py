@@ -9,7 +9,6 @@ from datetime import datetime
 import pandas as pd
 # import statement for LOADED_Q_CHANGE_FOR_QUENCH in valdate_quench function from Lisa's code
 from applications.quench_processing.quench_utils import LOADED_Q_CHANGE_FOR_QUENCH
-import logging
 
 # to extract data using a directory:
 directory_path = r"G:\My Drive\ACCL_L3B_3180"
@@ -152,10 +151,15 @@ for file in quench_files:
     else:
         count_false += 1
     
-# converting results list of results to DataFrame
-results_saved_file = pd.DataFrame(results)
+# converting results list to DataFrame
+validation_results = pd.DataFrame(results)
 
-# saving results from all files as tab-separated .txt file
-results_saved_file.to_csv("quench_validation_results.txt", sep='\t', index=False)
+# # saving results from all files as tab-separated .txt file
+# validation_results.to_csv("quench_validation_results.txt", sep='\t', index=False)
+# print(f"Number of fake quenches: {count_false}, and number of real quenches: {count_true}")
+# print("Saved results to quench_validation_results.txt")
+
+# saving results from all files as column separated .csv file
+validation_results.to_csv("quench_validation_results.csv", index=False)
 print(f"Number of fake quenches: {count_false}, and number of real quenches: {count_true}")
-print("Saved results to quench_validation_results.txt")
+print("Saved results to quench_validation_results.csv")
