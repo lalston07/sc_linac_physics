@@ -1,328 +1,161 @@
-import datetime
-import time
-from typing import Optional
-
+import matplotlib.pyplot as plt
 import numpy as np
-from lcls_tools.common.controls.pyepics.utils import PV, EPICS_INVALID_VAL
+import io
+import glob
+import os
+import re
+import time
+from datetime import datetime
+import pandas as pd
+# import statement for LOADED_Q_CHANGE_FOR_QUENCH in valdate_quench function from Lisa's code
+from applications.quench_processing.quench_utils import LOADED_Q_CHANGE_FOR_QUENCH
+import logging
 
-from applications.quench_processing.quench_utils import (
-    QUENCH_AMP_THRESHOLD,
-    LOADED_Q_CHANGE_FOR_QUENCH,
-    MAX_WAIT_TIME_FOR_QUENCH,
-    QUENCH_STABLE_TIME,
-    MAX_QUENCH_RETRIES,
-    DECARAD_SETTLE_TIME,
-    RADIATION_LIMIT,
-)
-from utils.sc_linac.cavity import Cavity
-from utils.sc_linac.decarad import Decarad
-from utils.sc_linac.linac_utils import QuenchError, RF_MODE_SELA
+# to extract data using a directory:
+directory_path = r"G:\My Drive\ACCL_L3B_3180"
 
-################# NEW CODE SECTION #######################
-from quench_waveform_v2 import cavity_data
-time_range = time_range = list(range(len(cavity_data)))
+# print all of the file names with "_QUENCH" in the folder using a loop (using glob module)
+file_results = glob.glob(directory_path + '/**/*QUENCH.txt', recursive=True) # force this to have a number before _QUENCH
+print(f"Found {len(file_results)} matching QUENCH text files:")
+quench_files = [f for f in file_results if re.search(r"\d+_QUENCH", f)]
+print(f"Found {len(quench_files)} matching '##_QUENCH' text files:")
+# print(quench_files)
 
-from utils.sc_linac.linac import Machine
-from applications.quench_processing.quench_cryomodule import QuenchCryomodule
+# creating a function to extract the waveform data and timestamps from each file
+def extracting_data(path_name, faultname): 
+    with open(path_name, 'r') as file:
+        for line in file: 
+            if f"{faultname}" in line and f"{faultname}." not in line: 
+                data = pd.Series(line.split())
+                target_timestamp = line.split()[1]  # searching for timestamp in case it varies
+                values = data[2:].astype(float).values
 
-from utils.sc_linac.cryomodule import Cryomodule
-##########################################################
+                print(f"{faultname} Information:")
+                print(f"Length of data: {len(values)}")
+                print(f"First value: {values[0]}, Last value: {values[-1]}")
+                print(f"Min value: {np.min(values)}, Max value: {np.max(values)}\n")
 
-class QuenchCavity(Cavity):
-    def __init__(
-        self,
-        cavity_num,
-        rack_object,
-    ):
-        super().__init__(cavity_num=cavity_num, rack_object=rack_object)
-        self.cav_power_pv = self.pv_addr("CAV:PWRMEAN")
-        self.forward_power_pv = self.pv_addr("FWD:PWRMEAN")
-        self.reverse_power_pv = self.pv_addr("REV:PWRMEAN")
+                return values, target_timestamp
+    return None, None   # added in case the PV line is not found
 
-        self.fault_waveform_pv = self.pv_addr("CAV:FLTAWF")
-        self._fault_waveform_pv_obj: Optional[PV] = None
+# re-writing Lisa's function to validate the quenches (real vs fake)
+def validate_quench(fault_data, time_data, saved_loaded_q, frequency, wait_for_update: bool=False, logger=None):
+    """
+    Parsing the fault waveforms to calculate the loaded Q to try to determine
+    if a quench was real.
 
-        self.decay_ref_pv = self.pv_addr("DECAYREFWF")
+    DERIVATION NOTES
+    A(t) = A0 * e^((-2 * pi * cav_freq * t)/(2 * loaded_Q)) = A0 * e ^ ((-pi * cav_freq * t)/loaded_Q)
 
-        self.fault_time_waveform_pv = self.pv_addr("CAV:FLTTWF")
-        self._fault_time_waveform_pv_obj: Optional[PV] = None
+    ln(A(t)) = ln(A0) + ln(e ^ ((-pi * cav_freq * t)/loaded_Q)) = ln(A0) - ((pi * cav_freq * t)/loaded_Q)
+    polyfit(t, ln(A(t)), 1) = [-((pi * cav_freq)/loaded_Q), ln(A0)]
+    polyfit(t, ln(A0/A(t)), 1) = [(pi * f * t)/Ql]
 
-        self.srf_max_pv = self.pv_addr("ADES_MAX_SRF")
-        self.pre_quench_amp = None
-        self._quench_bypass_rbck_pv: Optional[PV] = None
-        self._current_q_loaded_pv_obj: Optional[PV] = None
+    https://education.molssi.org/python-data-analysis/03-data-fitting/index.html
 
-        self.decarad: Optional[Decarad] = None
+    :param wait_for_update: bool
+    :return: bool representing whether quench was real
+    """
+    if logger is None:
+        class CavityLogger:
+            def info(self, msg): 
+                pass
+        logger = CavityLogger()
 
-    @property
-    def current_q_loaded_pv_obj(self):
-        if not self._current_q_loaded_pv_obj:
-            self._current_q_loaded_pv_obj = PV(self.current_q_loaded_pv)
-        return self._current_q_loaded_pv_obj
+    if wait_for_update:
+        print(f"Waiting 0.1s to give {fault_data} waveforms a chance to update")
+        time.sleep(0.1)
+    
+    time_0 = 0
+    for time_0, timestamp in enumerate(time_data):
+        if timestamp >= 0:
+            break
+    
+    fault_data = fault_data[time_0:]
+    time_data = time_data[time_0:]
 
-    @property
-    def quench_latch_pv_obj(self) -> PV:
-        if not self._quench_latch_pv_obj:
-            self._quench_latch_pv_obj = PV(self.quench_latch_pv)
-        return self._quench_latch_pv_obj
+    end_decay = len(fault_data) - 1
 
-    @property
-    def quench_latch_invalid(self):
-        return self.quench_latch_pv_obj.severity == EPICS_INVALID_VAL
+    # to find where amplitude decays to "zero"
+    for end_decay, amp in enumerate(fault_data):
+        if amp < 0.002:
+            break
 
-    @property
-    def quench_intlk_bypassed(self) -> bool:
-        if not self._quench_bypass_rbck_pv:
-            self._quench_bypass_rbck_pv = PV(self.pv_addr("QUENCH_BYP_RBV"))
-        return self._quench_bypass_rbck_pv.get() == 1
+    fault_data = fault_data[:end_decay]
+    time_data = time_data[:end_decay]
 
-    @property
-    def fault_waveform_pv_obj(self) -> PV:
-        if not self._fault_waveform_pv_obj:
-            self._fault_waveform_pv_obj = PV(self.fault_waveform_pv)
-        return self._fault_waveform_pv_obj
+    pre_quench_amp = fault_data[0]  # pre-quench amplitude
 
-    @property
-    def fault_time_waveform_pv_obj(self) -> PV:
-        if not self._fault_time_waveform_pv_obj:
-            self._fault_time_waveform_pv_obj = PV(self.fault_time_waveform_pv)
-        return self._fault_time_waveform_pv_obj
+    exponential_term = np.polyfit(time_data, np.log(pre_quench_amp / fault_data), 1)[0]
+    loaded_q = (np.pi * frequency) / exponential_term
 
-    def reset_interlocks(self, wait: int = 0, attempt: int = 0, time_after_reset=1):
-        """Overwriting base function to skip wait/reset cycle"""
-        print(f"Resetting interlocks for {self}")
+    thresh_for_quench = LOADED_Q_CHANGE_FOR_QUENCH * saved_loaded_q
+    logger.info(f"Saved Q: {saved_loaded_q:.2e}")
+    logger.info(f"Last recorded amplitude: {fault_data[0]}")
+    logger.info(f"Threshold: {thresh_for_quench:.2e}")
+    logger.info(f"Calculated Loaded Q: {loaded_q:.2e}")
 
-        if not self._interlock_reset_pv_obj:
-            self._interlock_reset_pv_obj = PV(self.interlock_reset_pv)
+    is_real = loaded_q < thresh_for_quench
+    print(f"Validation: {is_real}")
+    
+    return is_real
 
-        self._interlock_reset_pv_obj.put(1)
-        self.wait_for_decarads()
+# initializations before file loop
+results = []
+count_false = 0
+count_true = 0
 
-    def walk_to_quench(
-        self,
-        end_amp: float = 21,
-        step_size: float = 0.2,
-        step_time: float = 30,
-    ):
-        self.reset_interlocks()
-        while not self.is_quenched and self.ades < end_amp:
-            self.check_abort()
-            self.ades = min(self.ades + step_size, end_amp)
-            self.wait(step_time - DECARAD_SETTLE_TIME)
-            self.wait_for_decarads()
+for file in quench_files: 
+    print("\nProcessing file: " + file)
+    
+    # getting PV and timestamp information from {file}
+    # line below splits the file in to 4 parts (after the '\') and gets the last part (filename)
+    filename = file.split("\\", 4)[-1].replace('.txt','') 
+    print(filename)
+    parts = filename.split('_') # splits the filename into parts at each '_'
+    pv_base = parts[0] + ":" + parts[1] + ":" + parts[2]    # ex: pt(1): ACCL, pt(2): L3B, pt(3):3180
+    timestamp_raw = parts[3] + "_" + parts[4]               # ex: pt(3): 20221028, pt(4): 235218
+    # line below formats the timestamp to match the file layout
+    timestamp = datetime.strptime(timestamp_raw, "%Y%m%d_%H%M%S").strftime("%Y-%m-%d_%H:%M:%S.")
+    print("PV label: " + pv_base)
+    print("Timestamp: " + timestamp + "\n")
 
-    def wait(self, seconds: float):
-        for _ in range(int(seconds)):
-            self.check_abort()
-            time.sleep(1)
-            if self.is_quenched:
-                return
-        time.sleep(seconds - int(seconds))
+    # constructing PV label strings
+    cavity_faultname = pv_base + ':CAV:FLTAWF'  # ex: ACCL:L3B:3180:CAV:FLTAWF
+    forward_pow = pv_base + ':FWD:FLTAWF'       # ex: ACCL:L3B:3180:FWD:FLTAWF
+    reverse_pow = pv_base + ':REV:FLTAWF'       # ex: ACCL:L3B:3180:REV:FLTAWF
+    decay_ref = pv_base + ':DECAYREFWF'         # ex: ACCL:L3B:3180:DECAYREFWF    
+    time_range = pv_base + ':CAV:FLTTWF'        # ex: ACCL:L3B:3180:CAV:FLTTWF
+    q_value = pv_base + ":QLOADED"              # ex: ACCL:L3B:3180:QLOADED 
+    freq_value = pv_base + ":FREQ"              # ex: ACCL:L3B:3180:FREQ
+    
+    # extract each waveform using defined function
+    cavity_data, cavity_time = extracting_data(file, cavity_faultname)
+    forward_data, forward_time = extracting_data(file, forward_pow)
+    reverse_data, reverse_time = extracting_data(file, reverse_pow)
+    decay_data, decay_time = extracting_data(file, decay_ref)
+    time_data, time_timestamp = extracting_data(file, time_range)
+    q_data, q_time = extracting_data(file, q_value)                 # used to find saved_loaded_q from validate_quench
+    freq_data, freq_time = extracting_data(file, freq_value)        # used to find frequency from validate_quench
 
-    def wait_for_quench(self, time_to_wait=MAX_WAIT_TIME_FOR_QUENCH) -> Optional[float]:
-        # wait 1s before resetting just in case
-        time.sleep(1)
-        self.reset_interlocks()
-        time_start = datetime.datetime.now()
-        print(f"{datetime.datetime.now()} Waiting {time_to_wait}s for {self} to quench")
+    # converting Q and frequency from array to single value
+    q_data = q_data[0]
+    freq_data = freq_data[0]
 
-        while (
-            not self.is_quenched
-            and (datetime.datetime.now() - time_start).total_seconds() < time_to_wait
-        ):
-            self.check_abort()
-            time.sleep(1)
+    # running validation
+    # frequency is fixed value (1.3 GHz) and saved_loaded_q varies for each file
+    is_real = validate_quench(cavity_data, time_data, saved_loaded_q=q_data, frequency=freq_data)  
+    results.append({"filename": f"{filename}.txt", "timestamp": timestamp, "real_quench": is_real})
 
-        time_done = datetime.datetime.now()
+    if is_real:
+        count_true += 1
+    else:
+        count_false += 1
+    
+# converting results list of results to DataFrame
+results_saved_file = pd.DataFrame(results)
 
-        return (time_done - time_start).total_seconds()
-
-    def wait_for_decarads(self):
-        if self.is_quenched:
-            print(
-                f"Detected {self} quench, waiting {DECARAD_SETTLE_TIME}s for decarads to settle"
-            )
-            start = datetime.datetime.now()
-            while (
-                datetime.datetime.now() - start
-            ).total_seconds() < DECARAD_SETTLE_TIME:
-                super().check_abort()
-                time.sleep(1)
-
-    def check_abort(self):
-        super().check_abort()
-        if self.decarad.max_raw_dose > RADIATION_LIMIT:
-            raise QuenchError("Max Radiation Dose Exceeded")
-        if self.has_uncaught_quench():
-            raise QuenchError("Potential uncaught quench detected")
-
-    def has_uncaught_quench(self) -> bool:
-        return (
-            self.is_on
-            and self.rf_mode == RF_MODE_SELA
-            and self.aact <= QUENCH_AMP_THRESHOLD * self.ades
-        )
-
-    def quench_process(
-        self,
-        start_amp: float = 5,
-        end_amp: float = 21,
-        step_size: float = 0.2,
-        step_time: float = 30,
-    ):
-        self.turn_off()
-        self.set_sela_mode()
-        self.ades = min(5.0, start_amp)
-        self.turn_on()
-        self.walk_amp(des_amp=start_amp, step_size=0.2)
-
-        if end_amp > self.ades_max:
-            print(f"{end_amp} above AMAX, ramping to {self.ades_max} instead")
-            end_amp = self.ades_max
-
-        quenched = False
-
-        while self.ades < end_amp:
-            self.check_abort()
-
-            print(f"Walking {self} to quench")
-            self.walk_to_quench(
-                end_amp=end_amp,
-                step_size=step_size,
-                step_time=step_time if not quenched else 3 * 60,
-            )
-
-            if self.is_quenched:
-                quenched = True
-                print(f"{datetime.datetime.now()} Detected quench for {self}")
-                attempt = 0
-                running_times = []
-                time_to_quench = self.wait_for_quench()
-                running_times.append(time_to_quench)
-
-                # if time_to_quench >= MAX_WAIT_TIME_FOR_QUENCH, the cavity was
-                # stable
-                while (
-                    time_to_quench < MAX_WAIT_TIME_FOR_QUENCH
-                    and attempt < MAX_QUENCH_RETRIES
-                ):
-                    super().check_abort()
-                    time_to_quench = self.wait_for_quench()
-                    running_times.append(time_to_quench)
-                    attempt += 1
-
-                if (
-                    attempt
-                    >= MAX_QUENCH_RETRIES
-                    # and not running_times[-1] > running_times[0]
-                ):
-                    print(f"Attempt: {attempt}")
-                    print(f"Running times: {running_times}")
-                    raise QuenchError("Quench processing failed")
-
-        while (
-            self.wait_for_quench(time_to_wait=QUENCH_STABLE_TIME) < QUENCH_STABLE_TIME
-        ):
-            print(
-                f"{datetime.datetime.now()}{self} made it to target amplitude, "
-                f"waiting {QUENCH_STABLE_TIME}s to prove stability"
-            )
-            super().check_abort()
-
-    def validate_quench(self, wait_for_update: bool = False):
-        """
-        Parsing the fault waveforms to calculate the loaded Q to try to determine
-        if a quench was real.
-
-        DERIVATION NOTES
-        A(t) = A0 * e^((-2 * pi * cav_freq * t)/(2 * loaded_Q)) = A0 * e ^ ((-pi * cav_freq * t)/loaded_Q)
-
-        ln(A(t)) = ln(A0) + ln(e ^ ((-pi * cav_freq * t)/loaded_Q)) = ln(A0) - ((pi * cav_freq * t)/loaded_Q)
-        polyfit(t, ln(A(t)), 1) = [-((pi * cav_freq)/loaded_Q), ln(A0)]
-        polyfit(t, ln(A0/A(t)), 1) = [(pi * f * t)/Ql]
-
-        https://education.molssi.org/python-data-analysis/03-data-fitting/index.html
-
-        :param wait_for_update: bool
-        :return: bool representing whether quench was real
-        """
-
-        if wait_for_update:
-            print(f"Waiting 0.1s to give {self} waveforms a chance to update")
-            time.sleep(0.1)
-
-        # ORIGINAL CODE
-        time_data = self.fault_time_waveform_pv_obj.get()
-        fault_data = self.fault_waveform_pv_obj.get()
-        time_0 = 0
-        
-        ################### NEW CODE SECTION #######################
-        # time_data = time_range
-        # fault_data = cavity_data
-        # time_0 = 0
-        ############################################################
-
-        # Look for time 0 (quench). These waveforms capture data beforehand
-        for time_0, timestamp in enumerate(time_data):
-            if timestamp >= 0:
-                break
-
-        fault_data = fault_data[time_0:]
-        time_data = time_data[time_0:]
-
-        end_decay = len(fault_data) - 1
-
-        # Find where the amplitude decays to "zero"
-        for end_decay, amp in enumerate(fault_data):
-            if amp < 0.002:
-                break
-
-        fault_data = fault_data[:end_decay]
-        time_data = time_data[:end_decay]
-
-        saved_loaded_q = self.current_q_loaded_pv_obj.get()
-
-        self.pre_quench_amp = fault_data[0]
-
-        exponential_term = np.polyfit(
-            time_data, np.log(self.pre_quench_amp / fault_data), 1
-        )[0]
-        loaded_q = (np.pi * self.frequency) / exponential_term
-
-        thresh_for_quench = LOADED_Q_CHANGE_FOR_QUENCH * saved_loaded_q
-        self.cryomodule.logger.info(f"{self} Saved Loaded Q: {saved_loaded_q:.2e}")
-        self.cryomodule.logger.info(f"{self} Last recorded amplitude: {fault_data[0]}")
-        self.cryomodule.logger.info(f"{self} Threshold: {thresh_for_quench:.2e}")
-        self.cryomodule.logger.info(f"{self} Calculated Loaded Q: {loaded_q:.2e}")
-
-        is_real = loaded_q < thresh_for_quench
-        print("Validation: ", is_real)
-
-        return is_real
-
-    def reset_quench(self) -> bool:
-        is_real = self.validate_quench(wait_for_update=True)
-        if not is_real:
-            self.cryomodule.logger.info(f"{self} FAKE quench detected, resetting")
-            super().reset_interlocks()
-            return True
-
-        else:
-            self.cryomodule.logger.warning(
-                f"{self} REAL quench detected, not resetting"
-            )
-            return False
-        
-# # printing results
-# cannot use this method because cavity objects are not meant to be used in isolation
-# if __name__ == "__main__":
-#     test_cavity = QuenchCavity(cavity_num=" " , rack_object=" ")
-#     result = test_cavity.validate_quench()
-#     print("Is it a real quench?", result)
-
-machine_variable = Machine(cavity_class=QuenchCavity, cryomodule_class=QuenchCryomodule)
-results_1 = machine_variable.cryomodules["31"].cavities[8]
-print("\nRESULTS: ", results_1) # prints the section, cryomodule, and cavity numbers
-
-results_2 = results_1.validate_quench()
-print("Is it a real quench?", results_2)
+# saving results from all files as tab-separated .txt file
+results_saved_file.to_csv("quench_validation_results.txt", sep='\t', index=False)
+print(f"Number of fake quenches: {count_false}, and number of real quenches: {count_true}")
+print("Saved results to quench_validation_results.txt")
